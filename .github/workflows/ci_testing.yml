@@ -9,18 +9,13 @@ on:
       - 'frontend/**'
       - '.github/workflows/**'
 
-# Cancel older runs on the same branch to avoid overlapping builds
 concurrency:
   group: ci-testing-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  # e.g., s224005289week10acr.azurecr.io  (GitHub Secret)
   ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
-  # Full JSON for azure/login (GitHub Secret)
   AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
-  # Use testing prefix like you had
-  TAG: testing-${{ github.sha }}
 
 jobs:
   # --- Run backend tests against service Postgres containers ---
@@ -28,7 +23,6 @@ jobs:
     runs-on: ubuntu-latest
 
     services:
-      # Product DB
       product_db:
         image: postgres:15
         env:
@@ -43,7 +37,6 @@ jobs:
         ports:
           - 5432:5432
 
-      # Order DB
       order_db:
         image: postgres:15
         env:
@@ -58,7 +51,6 @@ jobs:
         ports:
           - 5433:5432
 
-      # Customer DB
       customer_db:
         image: postgres:15
         env:
@@ -77,7 +69,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Reuse week08: Python 3.10
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
@@ -143,56 +134,69 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Azure login using a Service Principal secret
+      # Azure login (Service Principal JSON in secret)
       - name: Azure Login
         uses: azure/login@v1
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }} # Needs to be set as a GitHub Secret (Service Principal JSON)
+          creds: ${{ env.AZURE_CREDENTIALS }}
 
-      # Login to Azure Container Registry (ACR)
+      # az acr login expects the REGISTRY NAME (strip ".azurecr.io")
       - name: Login to Azure Container Registry
-        run: az acr login --name ${{ env.ACR_LOGIN_SERVER }}
+        shell: bash
+        run: |
+          REG_NAME="${ACR_LOGIN_SERVER%%.azurecr.io}"
+          if [[ -z "$REG_NAME" || "$REG_NAME" == "$ACR_LOGIN_SERVER" ]]; then
+            echo "ERROR: ACR_LOGIN_SERVER must look like <name>.azurecr.io (got: $ACR_LOGIN_SERVER)"
+            exit 1
+          fi
+          az acr login --name "$REG_NAME"
 
-      # Install Docker Scout (week08 reuse)
       - name: Install latest Docker Scout
         run: curl -fsSL https://raw.githubusercontent.com/docker/scout-cli/main/install.sh | sh
 
-
-      # --- Build and Push: customer_service ---
-      - name: Build customer_service
+      # --- Build & Push: customer_service ---
+      - name: Build Customer Service Image
         run: |
-          docker build \
-            -t ${{ env.ACR_LOGIN_SERVER }}/customer_service:${{ env.TAG }} \
-            -f backend/customer_service/Dockerfile backend/customer_service
-      - name: Push customer_service
-        run: docker push ${{ env.ACR_LOGIN_SERVER }}/customer_service:${{ env.TAG }}
-
-      # --- Build and Push: product_service ---
-      - name: Build product_service
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/customer_service:latest ./backend/customer_service/
+      - name: Docker Scout CVEs (Customer) – fail on critical
         run: |
-          docker build \
-            -t ${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.TAG }} \
-            -f backend/product_service/Dockerfile backend/product_service
-      - name: Push product_service
-        run: docker push ${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.TAG }}
+          docker scout cves local://${{ env.ACR_LOGIN_SERVER }}/customer_service:latest \
+            --only-severity critical --exit-code
+      - name: Push Customer Service Image
+        run: docker push ${{ env.ACR_LOGIN_SERVER }}/customer_service:latest
 
-      # --- Build and Push: order_service ---
-      - name: Build order_service
+      # --- Build & Push: product_service ---
+      - name: Build Product Service Image
         run: |
-          docker build \
-            -t ${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.TAG }} \
-            -f backend/order_service/Dockerfile backend/order_service
-      - name: Push order_service
-        run: docker push ${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.TAG }}
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/product_service:latest ./backend/product_service/
+      - name: Docker Scout CVEs (Product) – fail on critical
+        run: |
+          docker scout cves local://${{ env.ACR_LOGIN_SERVER }}/product_service:latest \
+            --only-severity critical --exit-code
+      - name: Push Product Service Image
+        run: docker push ${{ env.ACR_LOGIN_SERVER }}/product_service:latest
 
-      # --- Build and Push: frontend ---
-      - name: Build frontend
+      # --- Build & Push: order_service ---
+      - name: Build Order Service Image
         run: |
-          docker build \
-            -t ${{ env.ACR_LOGIN_SERVER }}/frontend:${{ env.TAG }} \
-            -f frontend/Dockerfile frontend
-      - name: Push frontend
-        run: docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:${{ env.TAG }}
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/order_service:latest ./backend/order_service/
+      - name: Docker Scout CVEs (Order) – fail on critical
+        run: |
+          docker scout cves local://${{ env.ACR_LOGIN_SERVER }}/order_service:latest \
+            --only-severity critical --exit-code
+      - name: Push Order Service Image
+        run: docker push ${{ env.ACR_LOGIN_SERVER }}/order_service:latest
+
+      # --- Build & Push: frontend ---
+      - name: Build Frontend Image
+        run: |
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:latest ./frontend
+      - name: Docker Scout CVEs (Frontend) – fail on critical
+        run: |
+          docker scout cves local://${{ env.ACR_LOGIN_SERVER }}/frontend:latest \
+            --only-severity critical --exit-code
+      - name: Push Frontend Image
+        run: docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:latest
 
       - name: Azure Logout
         if: always()
