@@ -1,29 +1,40 @@
 name: CI - Test, Build & Push (testing)
- 
+
 on:
   workflow_dispatch:
   push:
     branches: [ testing ]
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - '.github/workflows/**'
+
+# Cancel older runs on the same branch to avoid overlapping builds
+concurrency:
+  group: ci-testing-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
+  # e.g., s224005289week10acr.azurecr.io  (GitHub Secret)
   ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
+  # Full JSON for azure/login (GitHub Secret)
   AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+  # Use testing prefix like you had
   TAG: testing-${{ github.sha }}
 
 jobs:
-  test-and-build:
+  # --- Run backend tests against service Postgres containers ---
+  test_backends:
     runs-on: ubuntu-latest
 
-
     services:
-      # Product DB container
+      # Product DB
       product_db:
         image: postgres:15
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: products
-        # Make pg_isready available so the service is healthy before tests run
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 10s
@@ -31,7 +42,7 @@ jobs:
           --health-retries 5
         ports:
           - 5432:5432
-      
+
       # Order DB
       order_db:
         image: postgres:15
@@ -39,13 +50,13 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: orders
-        ports:
-          - 5433:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+        ports:
+          - 5433:5432
 
       # Customer DB
       customer_db:
@@ -54,24 +65,23 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: customers
-        ports:
-          - 5434:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+        ports:
+          - 5434:5432
 
-          
     steps:
-    
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      # Reuse week08: Python 3.10
+      - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.10'
 
       # --- customer_service ---
       - name: Install test deps (customer_service)
@@ -87,9 +97,8 @@ jobs:
           POSTGRES_DB: customers
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          # Belt-and-braces: some apps prefer DATABASE_URL; this overrides defaults.
           DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5434/customers
-        run: pytest -q
+        run: pytest --maxfail=1 --disable-warnings -q
 
       # --- product_service ---
       - name: Install test deps (product_service)
@@ -106,7 +115,7 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/products
-        run: pytest -q
+        run: pytest --maxfail=1 --disable-warnings -q
 
       # --- order_service ---
       - name: Install test deps (order_service)
@@ -123,42 +132,94 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5433/orders
-        run: pytest -q
+        run: pytest --maxfail=1 --disable-warnings -q
 
-      # ---- Push images to ACR only after tests pass ----
+  # --- Build & Push images (only if tests pass) ---
+  build_and_push_images:
+    runs-on: ubuntu-latest
+    needs: test_backends
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Reuse week08 pattern: azure/login with SP JSON
       - name: Azure Login
         uses: azure/login@v1
         with:
           creds: ${{ env.AZURE_CREDENTIALS }}
 
+      # Derive registry NAME from login server, then az acr login
       - name: Derive ACR name & login
         shell: bash
         run: |
           ACR_NAME="${{ env.ACR_LOGIN_SERVER }}"
-          # If a login server was provided, strip the suffix to get the registry name
           ACR_NAME="${ACR_NAME%%.azurecr.io}"
           echo "ACR_NAME=$ACR_NAME" >> $GITHUB_ENV
           az acr login --name "$ACR_NAME"
 
-      - name: Build & Push customer_service
-        run: |
-          docker build -t ${{ env.ACR_LOGIN_SERVER }}/customer_service:${{ env.TAG }} -f backend/customer_service/Dockerfile backend/customer_service
-          docker push ${{ env.ACR_LOGIN_SERVER }}/customer_service:${{ env.TAG }}
+      # Install Docker Scout (week08 reuse)
+      - name: Install latest Docker Scout
+        run: curl -fsSL https://raw.githubusercontent.com/docker/scout-cli/main/install.sh | sh
 
-      - name: Build & Push product_service
+      - name: Docker Hub login for Docker Scout
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          docker build -t ${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.TAG }} -f backend/product_service/Dockerfile backend/product_service
-          docker push ${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.TAG }}
+          echo "${DOCKERHUB_TOKEN}" | docker login --username "${DOCKERHUB_USERNAME}" --password-stdin
 
-      - name: Build & Push order_service
+      # --- Build, Scan, Push: customer_service ---
+      - name: Build customer_service
         run: |
-          docker build -t ${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.TAG }} -f backend/order_service/Dockerfile backend/order_service
-          docker push ${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.TAG }}
+          docker build \
+            -t ${{ env.ACR_LOGIN_SERVER }}/customer_service:${{ env.TAG }} \
+            -f backend/customer_service/Dockerfile backend/customer_service
+      - name: Docker Scout CVEs (customer_service) – fail on critical
+        run: |
+          docker scout cves local://${{ env.ACR_LOGIN_SERVER }}/customer_service:${{ env.TAG }} \
+            --only-severity critical --exit-code
+      - name: Push customer_service
+        run: docker push ${{ env.ACR_LOGIN_SERVER }}/customer_service:${{ env.TAG }}
 
-      - name: Build & Push frontend
+      # --- Build, Scan, Push: product_service ---
+      - name: Build product_service
         run: |
-          docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:${{ env.TAG }} -f frontend/Dockerfile frontend
-          docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:${{ env.TAG }}
+          docker build \
+            -t ${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.TAG }} \
+            -f backend/product_service/Dockerfile backend/product_service
+      - name: Docker Scout CVEs (product_service) – fail on critical
+        run: |
+          docker scout cves local://${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.TAG }} \
+            --only-severity critical --exit-code
+      - name: Push product_service
+        run: docker push ${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.TAG }}
+
+      # --- Build, Scan, Push: order_service ---
+      - name: Build order_service
+        run: |
+          docker build \
+            -t ${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.TAG }} \
+            -f backend/order_service/Dockerfile backend/order_service
+      - name: Docker Scout CVEs (order_service) – fail on critical
+        run: |
+          docker scout cves local://${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.TAG }} \
+            --only-severity critical --exit-code
+      - name: Push order_service
+        run: docker push ${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.TAG }}
+
+      # --- Build, Scan, Push: frontend ---
+      - name: Build frontend
+        run: |
+          docker build \
+            -t ${{ env.ACR_LOGIN_SERVER }}/frontend:${{ env.TAG }} \
+            -f frontend/Dockerfile frontend
+      - name: Docker Scout CVEs (frontend) – fail on critical
+        run: |
+          docker scout cves local://${{ env.ACR_LOGIN_SERVER }}/frontend:${{ env.TAG }} \
+            --only-severity critical --exit-code
+      - name: Push frontend
+        run: docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:${{ env.TAG }}
 
       - name: Azure Logout
         if: always()
