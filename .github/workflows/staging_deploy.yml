@@ -8,7 +8,7 @@ on:
 
 env:
   AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
-  ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
+  ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }} # e.g., s224005289week10acr.azurecr.io
   AKS_CLUSTER_NAME: s224005289week10aks
   AKS_RESOURCE_GROUP: sit722
 
@@ -30,24 +30,46 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Azure Login
+      - name: Log in to Azure
         uses: azure/login@v1
         with:
           creds: ${{ env.AZURE_CREDENTIALS }}
+          enable-AzPSSession: true
 
-      - name: Get AKS Credentials
-        run: az aks get-credentials -g "${{ env.AKS_RESOURCE_GROUP }}" -n "${{ env.AKS_CLUSTER_NAME }}" --overwrite-existing
+      - name: Set Kubernetes context (get AKS credentials)
+        run: |
+          az aks get-credentials \
+            --resource-group "${{ env.AKS_RESOURCE_GROUP }}" \
+            --name "${{ env.AKS_CLUSTER_NAME }}" \
+            --overwrite-existing
+
+      # Ensure cluster can pull from ACR (idempotent)
+      - name: Attach ACR to AKS
+        shell: bash
+        run: |
+          REG_NAME="${ACR_LOGIN_SERVER%%.azurecr.io}"
+          if [[ -z "$REG_NAME" || "$REG_NAME" == "$ACR_LOGIN_SERVER" ]]; then
+            echo "ERROR: ACR_LOGIN_SERVER must look like <name>.azurecr.io (got: $ACR_LOGIN_SERVER)"
+            exit 1
+          fi
+          az aks update \
+            --name "${{ env.AKS_CLUSTER_NAME }}" \
+            --resource-group "${{ env.AKS_RESOURCE_GROUP }}" \
+            --attach-acr "$REG_NAME"
 
       - name: Create ephemeral namespace
         run: kubectl create namespace "${{ env.NAMESPACE }}"
 
-      - name: Apply base manifests
+      - name: Deploy infra (ConfigMaps, Secrets, Databases, RabbitMQ)
         run: |
           kubectl -n "${{ env.NAMESPACE }}" apply -f k8s/configmaps.yaml
           kubectl -n "${{ env.NAMESPACE }}" apply -f k8s/secrets.yaml
           kubectl -n "${{ env.NAMESPACE }}" apply -f k8s/product-db.yaml
           kubectl -n "${{ env.NAMESPACE }}" apply -f k8s/order-db.yaml
           kubectl -n "${{ env.NAMESPACE }}" apply -f k8s/rabbitmq.yaml
+
+      - name: Deploy services (Product, Customer, Order, Frontend)
+        run: |
           kubectl -n "${{ env.NAMESPACE }}" apply -f k8s/product-service.yaml
           kubectl -n "${{ env.NAMESPACE }}" apply -f k8s/customer-service.yaml
           kubectl -n "${{ env.NAMESPACE }}" apply -f k8s/order-service.yaml
