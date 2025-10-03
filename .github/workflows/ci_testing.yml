@@ -143,20 +143,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Reuse week08 pattern: azure/login with SP JSON
+      # Azure login using a Service Principal secret
       - name: Azure Login
         uses: azure/login@v1
         with:
-          creds: ${{ env.AZURE_CREDENTIALS }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }} # Needs to be set as a GitHub Secret (Service Principal JSON)
 
-      # Derive registry NAME from login server, then az acr login
-      - name: Derive ACR name & login
-        shell: bash
-        run: |
-          ACR_NAME="${{ env.ACR_LOGIN_SERVER }}"
-          ACR_NAME="${ACR_NAME%%.azurecr.io}"
-          echo "ACR_NAME=$ACR_NAME" >> $GITHUB_ENV
-          az acr login --name "$ACR_NAME"
+      # Login to Azure Container Registry (ACR)
+      - name: Login to Azure Container Registry
+        run: az acr login --name ${{ env.ACR_LOGIN_SERVER }}
 
       # Install Docker Scout (week08 reuse)
       - name: Install latest Docker Scout
