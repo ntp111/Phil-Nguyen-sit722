@@ -20,6 +20,14 @@ jobs:
        github.event.workflow_run.head_branch == 'testing')
     runs-on: ubuntu-latest
 
+    # Expose details to later jobs
+    outputs:
+      NAMESPACE:    ${{ steps.ns.outputs.NAMESPACE }}
+      FRONTEND_URL: ${{ steps.collect_urls.outputs.FRONTEND_URL }}
+      PRODUCT_URL:  ${{ steps.collect_urls.outputs.PRODUCT_URL }}
+      ORDER_URL:    ${{ steps.collect_urls.outputs.ORDER_URL }}
+      CUSTOMER_URL: ${{ steps.collect_urls.outputs.CUSTOMER_URL }}
+
     env:
       IMAGE_TAG: ${{ github.event_name == 'workflow_dispatch'
         && format('testing-{0}', github.sha)
@@ -58,45 +66,130 @@ jobs:
             --attach-acr "$REG_NAME"
 
       - name: Create ephemeral namespace
-        run: kubectl create namespace "${{ env.NAMESPACE }}"
+        id: ns
+        run: echo "NAMESPACE=${{ env.NAMESPACE }}" >> $GITHUB_OUTPUT
 
       - name: Deploy infra (ConfigMaps, Secrets, Databases, RabbitMQ)
         run: |
-          kubectl -n "${{ env.NAMESPACE }}" apply -f k8s/configmaps.yaml
-          kubectl -n "${{ env.NAMESPACE }}" apply -f k8s/secrets.yaml
-          kubectl -n "${{ env.NAMESPACE }}" apply -f k8s/product-db.yaml
-          kubectl -n "${{ env.NAMESPACE }}" apply -f k8s/order-db.yaml
-          kubectl -n "${{ env.NAMESPACE }}" apply -f k8s/rabbitmq.yaml
+          NS="${{ env.NAMESPACE }}"
+          kubectl -n "$NS" apply -f k8s/configmaps.yaml
+          kubectl -n "$NS" apply -f k8s/secrets.yaml
+          kubectl -n "$NS" apply -f k8s/product-db.yaml
+          kubectl -n "$NS" apply -f k8s/order-db.yaml
+          kubectl -n "$NS" apply -f k8s/rabbitmq.yaml
 
       - name: Deploy services (Product, Customer, Order, Frontend)
         run: |
-          kubectl -n "${{ env.NAMESPACE }}" apply -f k8s/product-service.yaml
-          kubectl -n "${{ env.NAMESPACE }}" apply -f k8s/customer-service.yaml
-          kubectl -n "${{ env.NAMESPACE }}" apply -f k8s/order-service.yaml
-          kubectl -n "${{ env.NAMESPACE }}" apply -f k8s/frontend.yaml
+          NS="${{ env.NAMESPACE }}"
+          kubectl -n "$NS" apply -f k8s/product-service.yaml
+          kubectl -n "$NS" apply -f k8s/customer-service.yaml
+          kubectl -n "$NS" apply -f k8s/order-service.yaml
+          kubectl -n "$NS" apply -f k8s/frontend.yaml
 
       - name: Point deployments at testing images
         run: |
-          kubectl -n "${{ env.NAMESPACE }}" set image deploy/product-service '*=${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.IMAGE_TAG }}'
-          kubectl -n "${{ env.NAMESPACE }}" set image deploy/customer-service '*=${{ env.ACR_LOGIN_SERVER }}/customer_service:${{ env.IMAGE_TAG }}'
-          kubectl -n "${{ env.NAMESPACE }}" set image deploy/order-service '*=${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.IMAGE_TAG }}'
-          kubectl -n "${{ env.NAMESPACE }}" set image deploy/frontend '*=${{ env.ACR_LOGIN_SERVER }}/frontend:${{ env.IMAGE_TAG }}'
+          NS="${{ env.NAMESPACE }}"
+          TAG="${{ env.IMAGE_TAG }}"
+          ACR="${{ env.ACR_LOGIN_SERVER }}"
+          kubectl -n "$NS" set image deploy/product-service   "*=${ACR}/product_service:${TAG}"
+          kubectl -n "$NS" set image deploy/customer-service  "*=${ACR}/customer_service:${TAG}"
+          kubectl -n "$NS" set image deploy/order-service     "*=${ACR}/order_service:${TAG}"
+          kubectl -n "$NS" set image deploy/frontend          "*=${ACR}/frontend:${TAG}"
 
       - name: Wait for rollouts
         run: |
-          kubectl -n "${{ env.NAMESPACE }}" rollout status deploy/product-service --timeout=180s
-          kubectl -n "${{ env.NAMESPACE }}" rollout status deploy/customer-service --timeout=180s
-          kubectl -n "${{ env.NAMESPACE }}" rollout status deploy/order-service --timeout=180s
-          kubectl -n "${{ env.NAMESPACE }}" rollout status deploy/frontend --timeout=180s
+          NS="${{ env.NAMESPACE }}"
+          kubectl -n "$NS" rollout status deploy/product-service --timeout=180s
+          kubectl -n "$NS" rollout status deploy/customer-service --timeout=180s
+          kubectl -n "$NS" rollout status deploy/order-service --timeout=180s
+          kubectl -n "$NS" rollout status deploy/frontend --timeout=180s
 
       - name: Smoke checks
         run: |
-          kubectl -n "${{ env.NAMESPACE }}" get pods -o wide
-          kubectl -n "${{ env.NAMESPACE }}" get svc -o wide
+          NS="${{ env.NAMESPACE }}"
+          kubectl -n "$NS" get pods -o wide
+          kubectl -n "$NS" get svc -o wide
 
-      - name: Teardown ephemeral namespace
-        if: always()
-        run: kubectl delete namespace "${{ env.NAMESPACE }}" --ignore-not-found=true
+      # === Manual testing support: discover IPs, build URLs, print checklist ===
+      - name: Wait for External IPs + collect URLs
+        id: collect_urls
+        shell: bash
+        run: |
+          set -e
+          NS="${{ env.NAMESPACE }}"
+          wait_ip () {
+            local svc="$1"
+            for i in {1..60}; do
+              ip=$(kubectl -n "$NS" get svc "$svc" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+              if [[ -n "$ip" ]]; then echo "$ip"; return 0; fi
+              sleep 5
+            done
+            return 1
+          }
+          get_port () {
+            local svc="$1"
+            kubectl -n "$NS" get svc "$svc" -o jsonpath='{.spec.ports[0].port}'
+          }
+
+          FRONTEND_IP=$(wait_ip frontend) || { echo "frontend LB IP not assigned"; exit 1; }
+          PRODUCT_IP=$(wait_ip product-service) || { echo "product-service LB IP not assigned"; exit 1; }
+          ORDER_IP=$(wait_ip order-service) || { echo "order-service LB IP not assigned"; exit 1; }
+          CUSTOMER_IP=$(wait_ip customer-service) || { echo "customer-service LB IP not assigned"; exit 1; }
+
+          FRONTEND_PORT=$(get_port frontend)
+          PRODUCT_PORT=$(get_port product-service)
+          ORDER_PORT=$(get_port order-service)
+          CUSTOMER_PORT=$(get_port customer-service)
+
+          FRONTEND_URL="http://${FRONTEND_IP}:${FRONTEND_PORT}"
+          PRODUCT_URL="http://${PRODUCT_IP}:${PRODUCT_PORT}"
+          ORDER_URL="http://${ORDER_IP}:${ORDER_PORT}"
+          CUSTOMER_URL="http://${CUSTOMER_IP}:${CUSTOMER_PORT}"
+
+          echo "FRONTEND_URL=${FRONTEND_URL}" >> $GITHUB_OUTPUT
+          echo "PRODUCT_URL=${PRODUCT_URL}"   >> $GITHUB_OUTPUT
+          echo "ORDER_URL=${ORDER_URL}"       >> $GITHUB_OUTPUT
+          echo "CUSTOMER_URL=${CUSTOMER_URL}" >> $GITHUB_OUTPUT
+
+          {
+            echo "## Staging environment (namespace \`${NS}\`)"
+            echo ""
+            echo "- **Frontend:** ${FRONTEND_URL}"
+            echo "- **Product API:** ${PRODUCT_URL}"
+            echo "- **Order API:** ${ORDER_URL}"
+            echo "- **Customer API:** ${CUSTOMER_URL}"
+            echo ""
+            echo "### Manual acceptance check"
+            echo "- [ ] Frontend loads without console errors"
+            echo "- [ ] \`${PRODUCT_URL}/health\` returns 200"
+            echo "- [ ] \`${ORDER_URL}/health\` returns 200"
+            echo "- [ ] \`${CUSTOMER_URL}/health\` returns 200"
+            echo "- [ ] Basic end-to-end flow succeeds"
+            echo ""
+            echo "_Approve the **manual-verify** job (environment: \`staging-verify\`) to proceed to teardown._"
+          } >> $GITHUB_STEP_SUMMARY
+
+  # Teardown after approval
+  teardown-staging:
+    needs: [deploy-staging, manual-verify]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ env.AZURE_CREDENTIALS }}
+
+      - name: Set Kubernetes context (get AKS credentials)
+        run: |
+          az aks get-credentials \
+            --resource-group "${{ env.AKS_RESOURCE_GROUP }}" \
+            --name "${{ env.AKS_CLUSTER_NAME }}" \
+            --overwrite-existing
+
+      - name: Delete ephemeral namespace
+        run: |
+          NS="${{ needs.deploy-staging.outputs.NAMESPACE }}"
+          kubectl delete namespace "$NS" --ignore-not-found=true
 
       - name: Azure Logout
         if: always()
