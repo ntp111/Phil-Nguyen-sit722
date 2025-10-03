@@ -1,0 +1,140 @@
+version: "3.8"
+
+services:
+  # PostgreSQL Database for Product Service
+  product_db:
+    image: postgres:15-alpine
+    container_name: product_db_container
+    restart: always
+    environment:
+      POSTGRES_DB: products
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - product_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d products"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL Database for Order Service
+  order_db:
+    image: postgres:15-alpine
+    container_name: order_db_container
+    restart: always
+    environment:
+      POSTGRES_DB: orders
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - order_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d orders"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # RabbitMQ (to mirror your k8s/rabbitmq.yaml)
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq_container
+    restart: always
+    ports:
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # Management UI
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Product Microservice (FastAPI)
+  product_service:
+    build:
+      context: ./backend/product_service
+      dockerfile: Dockerfile
+    image: week10_product_service:latest
+    container_name: product_api_container
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      # DB
+      POSTGRES_HOST: product_db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: products
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      # Azure Storage (use .env to provide secrets safely)
+      AZURE_STORAGE_ACCOUNT_NAME: s224005289week10sa
+      AZURE_STORAGE_ACCOUNT_KEY: ${AZURE_STORAGE_ACCOUNT_KEY:-changeme}
+      AZURE_STORAGE_CONTAINER_NAME: ${AZURE_STORAGE_CONTAINER_NAME:-uploads}
+      AZURE_SAS_TOKEN_EXPIRY_HOURS: ${AZURE_SAS_TOKEN_EXPIRY_HOURS:-24}
+      # RabbitMQ (if your service uses it later)
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      product_db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./backend/product_service/app:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  # Order Microservice (FastAPI)
+  order_service:
+    build:
+      context: ./backend/order_service
+      dockerfile: Dockerfile
+    image: week10_order_service:latest
+    container_name: order_api_container
+    restart: always
+    ports:
+      - "8001:8000"
+    environment:
+      # DB
+      POSTGRES_HOST: order_db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: orders
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      # Upstream Product API
+      PRODUCT_SERVICE_URL: http://product_service:8000
+      # RabbitMQ (if used)
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      order_db:
+        condition: service_healthy
+      product_service:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./backend/order_service/app:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  # Frontend (Nginx serving static files)
+  frontend:
+    build:
+      context: ./frontend
+    image: week10_frontend:latest
+    container_name: product_order_frontend
+    restart: always
+    ports:
+      - "3000:80"
+    depends_on:
+      product_service:
+        condition: service_started
+      order_service:
+        condition: service_started
+    volumes:
+      - ./frontend:/usr/share/nginx/html
+
+volumes:
+  product_db_data:
+  order_db_data:
