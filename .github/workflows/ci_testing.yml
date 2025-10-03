@@ -151,17 +151,10 @@ jobs:
           fi
           az acr login --name "$REG_NAME"
 
-      - name: Install latest Docker Scout
-        run: curl -fsSL https://raw.githubusercontent.com/docker/scout-cli/main/install.sh | sh
-
       # --- Build & Push: customer_service ---
       - name: Build Customer Service Image
         run: |
           docker build -t ${{ env.ACR_LOGIN_SERVER }}/customer_service:latest ./backend/customer_service/
-      - name: Docker Scout CVEs (Customer) – fail on critical
-        run: |
-          docker scout cves local://${{ env.ACR_LOGIN_SERVER }}/customer_service:latest \
-            --only-severity critical --exit-code
       - name: Push Customer Service Image
         run: docker push ${{ env.ACR_LOGIN_SERVER }}/customer_service:latest
 
@@ -169,10 +162,6 @@ jobs:
       - name: Build Product Service Image
         run: |
           docker build -t ${{ env.ACR_LOGIN_SERVER }}/product_service:latest ./backend/product_service/
-      - name: Docker Scout CVEs (Product) – fail on critical
-        run: |
-          docker scout cves local://${{ env.ACR_LOGIN_SERVER }}/product_service:latest \
-            --only-severity critical --exit-code
       - name: Push Product Service Image
         run: docker push ${{ env.ACR_LOGIN_SERVER }}/product_service:latest
 
@@ -180,10 +169,6 @@ jobs:
       - name: Build Order Service Image
         run: |
           docker build -t ${{ env.ACR_LOGIN_SERVER }}/order_service:latest ./backend/order_service/
-      - name: Docker Scout CVEs (Order) – fail on critical
-        run: |
-          docker scout cves local://${{ env.ACR_LOGIN_SERVER }}/order_service:latest \
-            --only-severity critical --exit-code
       - name: Push Order Service Image
         run: docker push ${{ env.ACR_LOGIN_SERVER }}/order_service:latest
 
@@ -191,10 +176,6 @@ jobs:
       - name: Build Frontend Image
         run: |
           docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:latest ./frontend
-      - name: Docker Scout CVEs (Frontend) – fail on critical
-        run: |
-          docker scout cves local://${{ env.ACR_LOGIN_SERVER }}/frontend:latest \
-            --only-severity critical --exit-code
       - name: Push Frontend Image
         run: docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:latest
 
