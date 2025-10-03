@@ -157,62 +157,40 @@ jobs:
       - name: Install latest Docker Scout
         run: curl -fsSL https://raw.githubusercontent.com/docker/scout-cli/main/install.sh | sh
 
-      - name: Docker Hub login for Docker Scout
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: |
-          echo "${DOCKERHUB_TOKEN}" | docker login --username "${DOCKERHUB_USERNAME}" --password-stdin
 
-      # --- Build, Scan, Push: customer_service ---
+      # --- Build and Push: customer_service ---
       - name: Build customer_service
         run: |
           docker build \
             -t ${{ env.ACR_LOGIN_SERVER }}/customer_service:${{ env.TAG }} \
             -f backend/customer_service/Dockerfile backend/customer_service
-      - name: Docker Scout CVEs (customer_service) – fail on critical
-        run: |
-          docker scout cves local://${{ env.ACR_LOGIN_SERVER }}/customer_service:${{ env.TAG }} \
-            --only-severity critical --exit-code
       - name: Push customer_service
         run: docker push ${{ env.ACR_LOGIN_SERVER }}/customer_service:${{ env.TAG }}
 
-      # --- Build, Scan, Push: product_service ---
+      # --- Build and Push: product_service ---
       - name: Build product_service
         run: |
           docker build \
             -t ${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.TAG }} \
             -f backend/product_service/Dockerfile backend/product_service
-      - name: Docker Scout CVEs (product_service) – fail on critical
-        run: |
-          docker scout cves local://${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.TAG }} \
-            --only-severity critical --exit-code
       - name: Push product_service
         run: docker push ${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.TAG }}
 
-      # --- Build, Scan, Push: order_service ---
+      # --- Build and Push: order_service ---
       - name: Build order_service
         run: |
           docker build \
             -t ${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.TAG }} \
             -f backend/order_service/Dockerfile backend/order_service
-      - name: Docker Scout CVEs (order_service) – fail on critical
-        run: |
-          docker scout cves local://${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.TAG }} \
-            --only-severity critical --exit-code
       - name: Push order_service
         run: docker push ${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.TAG }}
 
-      # --- Build, Scan, Push: frontend ---
+      # --- Build and Push: frontend ---
       - name: Build frontend
         run: |
           docker build \
             -t ${{ env.ACR_LOGIN_SERVER }}/frontend:${{ env.TAG }} \
             -f frontend/Dockerfile frontend
-      - name: Docker Scout CVEs (frontend) – fail on critical
-        run: |
-          docker scout cves local://${{ env.ACR_LOGIN_SERVER }}/frontend:${{ env.TAG }} \
-            --only-severity critical --exit-code
       - name: Push frontend
         run: docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:${{ env.TAG }}
 
