@@ -34,7 +34,7 @@ jobs:
             --name "${{ env.AKS_CLUSTER_NAME }}" \
             --overwrite-existing
 
-      # Ensure cluster can pull from your ACR (idempotent)
+      # Ensure cluster can pull from ACR (idempotent)
       - name: Attach ACR to AKS
         shell: bash
         run: |
