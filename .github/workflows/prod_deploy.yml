@@ -1,0 +1,115 @@
+name: Production - Test, Build & Deploy (main)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+env:
+  AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+  ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
+  AKS_CLUSTER_NAME: s224005289week10aks
+  AKS_RESOURCE_GROUP: sit722
+  PROD_NS: production
+  TAG: prod-${{ github.sha }}
+
+jobs:
+  test-build-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test deps (customer_service)
+        working-directory: backend/customer_service
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Run tests (customer_service)
+        working-directory: backend/customer_service
+        run: pytest -q
+
+      - name: Install test deps (product_service)
+        working-directory: backend/product_service
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Run tests (product_service)
+        working-directory: backend/product_service
+        run: pytest -q
+
+      - name: Install test deps (order_service)
+        working-directory: backend/order_service
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Run tests (order_service)
+        working-directory: backend/order_service
+        run: pytest -q
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ env.AZURE_CREDENTIALS }}
+
+      - name: Derive ACR name & login
+        shell: bash
+        run: |
+          ACR_NAME="${{ env.ACR_LOGIN_SERVER }}"
+          ACR_NAME="${ACR_NAME%%.azurecr.io}"
+          echo "ACR_NAME=$ACR_NAME" >> $GITHUB_ENV
+          az acr login --name "$ACR_NAME"
+
+      - name: Build & Push prod images
+        run: |
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/customer_service:${{ env.TAG }} -f backend/customer_service/Dockerfile backend/customer_service
+          docker push ${{ env.ACR_LOGIN_SERVER }}/customer_service:${{ env.TAG }}
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.TAG }} -f backend/product_service/Dockerfile backend/product_service
+          docker push ${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.TAG }}
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.TAG }} -f backend/order_service/Dockerfile backend/order_service
+          docker push ${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.TAG }}
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:${{ env.TAG }} -f frontend/Dockerfile frontend
+          docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:${{ env.TAG }}
+
+      - name: Get AKS Credentials
+        run: az aks get-credentials -g "${{ env.AKS_RESOURCE_GROUP }}" -n "${{ env.AKS_CLUSTER_NAME }}" --overwrite-existing
+
+      - name: Ensure production namespace exists
+        run: |
+          kubectl get ns "${{ env.PROD_NS }}" >/dev/null 2>&1 || kubectl create namespace "${{ env.PROD_NS }}"
+
+      - name: Apply production manifests
+        run: |
+          kubectl -n "${{ env.PROD_NS }}" apply -f k8s/configmaps.yaml
+          kubectl -n "${{ env.PROD_NS }}" apply -f k8s/secrets.yaml
+          kubectl -n "${{ env.PROD_NS }}" apply -f k8s/product-db.yaml
+          kubectl -n "${{ env.PROD_NS }}" apply -f k8s/order-db.yaml
+          kubectl -n "${{ env.PROD_NS }}" apply -f k8s/rabbitmq.yaml
+          kubectl -n "${{ env.PROD_NS }}" apply -f k8s/product-service.yaml
+          kubectl -n "${{ env.PROD_NS }}" apply -f k8s/customer-service.yaml
+          kubectl -n "${{ env.PROD_NS }}" apply -f k8s/order-service.yaml
+          kubectl -n "${{ env.PROD_NS }}" apply -f k8s/frontend.yaml
+
+      - name: Point deployments at prod images
+        run: |
+          kubectl -n "${{ env.PROD_NS }}" set image deploy/product-service '*=${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.TAG }}'
+          kubectl -n "${{ env.PROD_NS }}" set image deploy/customer-service '*=${{ env.ACR_LOGIN_SERVER }}/customer_service:${{ env.TAG }}'
+          kubectl -n "${{ env.PROD_NS }}" set image deploy/order-service '*=${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.TAG }}'
+          kubectl -n "${{ env.PROD_NS }}" set image deploy/frontend '*=${{ env.ACR_LOGIN_SERVER }}/frontend:${{ env.TAG }}'
+
+      - name: Rollout status
+        run: |
+          kubectl -n "${{ env.PROD_NS }}" rollout status deploy/product-service --timeout=180s
+          kubectl -n "${{ env.PROD_NS }}" rollout status deploy/customer-service --timeout=180s
+          kubectl -n "${{ env.PROD_NS }}" rollout status deploy/order-service --timeout=180s
+          kubectl -n "${{ env.PROD_NS }}" rollout status deploy/frontend --timeout=180s
+
+      - name: Azure Logout
+        if: always()
+        run: az logout
