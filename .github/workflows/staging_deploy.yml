@@ -8,7 +8,8 @@ on:
 
 env:
   AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
-  ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }} # e.g., s224005289week10acr.azurecr.io
+  # e.g., s224005289week10acr.azurecr.io
+  ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
   AKS_CLUSTER_NAME: s224005289week10aks
   AKS_RESOURCE_GROUP: sit722
 
@@ -20,7 +21,6 @@ jobs:
        github.event.workflow_run.head_branch == 'testing')
     runs-on: ubuntu-latest
 
-    # Expose details to later jobs
     outputs:
       NAMESPACE:    ${{ steps.ns.outputs.NAMESPACE }}
       FRONTEND_URL: ${{ steps.collect_urls.outputs.FRONTEND_URL }}
@@ -29,9 +29,7 @@ jobs:
       CUSTOMER_URL: ${{ steps.collect_urls.outputs.CUSTOMER_URL }}
 
     env:
-      IMAGE_TAG: ${{ github.event_name == 'workflow_dispatch'
-        && format('testing-{0}', github.sha)
-        || format('testing-{0}', github.event.workflow_run.head_sha) }}
+      # Unique ephemeral namespace per run
       NAMESPACE: staging-${{ github.run_id }}
 
     steps:
@@ -67,7 +65,10 @@ jobs:
 
       - name: Create ephemeral namespace
         id: ns
-        run: echo "NAMESPACE=${{ env.NAMESPACE }}" >> $GITHUB_OUTPUT
+        run: |
+          NS="${{ env.NAMESPACE }}"
+          kubectl get ns "$NS" >/dev/null 2>&1 || kubectl create namespace "$NS"
+          echo "NAMESPACE=$NS" >> $GITHUB_OUTPUT
 
       - name: Deploy infra (ConfigMaps, Secrets, Databases, RabbitMQ)
         run: |
@@ -86,15 +87,15 @@ jobs:
           kubectl -n "$NS" apply -f k8s/order-service.yaml
           kubectl -n "$NS" apply -f k8s/frontend.yaml
 
-      - name: Point deployments at testing images
+      # Use :latest to match CI’s push
+      - name: Point deployments at latest images
         run: |
           NS="${{ env.NAMESPACE }}"
-          TAG="${{ env.IMAGE_TAG }}"
           ACR="${{ env.ACR_LOGIN_SERVER }}"
-          kubectl -n "$NS" set image deploy/product-service   "*=${ACR}/product_service:${TAG}"
-          kubectl -n "$NS" set image deploy/customer-service  "*=${ACR}/customer_service:${TAG}"
-          kubectl -n "$NS" set image deploy/order-service     "*=${ACR}/order_service:${TAG}"
-          kubectl -n "$NS" set image deploy/frontend          "*=${ACR}/frontend:${TAG}"
+          kubectl -n "$NS" set image deploy/product-service   "*=${ACR}/product_service:latest"
+          kubectl -n "$NS" set image deploy/customer-service  "*=${ACR}/customer_service:latest"
+          kubectl -n "$NS" set image deploy/order-service     "*=${ACR}/order_service:latest"
+          kubectl -n "$NS" set image deploy/frontend          "*=${ACR}/frontend:latest"
 
       - name: Wait for rollouts
         run: |
@@ -168,6 +169,20 @@ jobs:
             echo ""
             echo "_Approve the **manual-verify** job (environment: \`staging-verify\`) to proceed to teardown._"
           } >> $GITHUB_STEP_SUMMARY
+
+  # Manual approval gate (use a protected environment called "staging-verify")
+  manual-verify:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment:
+      name: staging-verify   # Configure required reviewers in repo settings → Environments
+    steps:
+      - name: Show ephemeral URLs
+        run: |
+          echo "Frontend:  ${{ needs.deploy-staging.outputs.FRONTEND_URL }}"
+          echo "Product:   ${{ needs.deploy-staging.outputs.PRODUCT_URL }}"
+          echo "Order:     ${{ needs.deploy-staging.outputs.ORDER_URL }}"
+          echo "Customer:  ${{ needs.deploy-staging.outputs.CUSTOMER_URL }}"
 
   # Teardown after approval
   teardown-staging:

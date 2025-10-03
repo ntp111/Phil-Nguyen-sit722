@@ -7,11 +7,10 @@ on:
 
 env:
   AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
-  ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }} # e.g., s224005289week10acr.azurecr.io
+  ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
   AKS_CLUSTER_NAME: s224005289week10aks
   AKS_RESOURCE_GROUP: sit722
   PROD_NS: production
-  TAG: prod-${{ github.sha }}
 
 jobs:
   deploy-production:
@@ -50,7 +49,8 @@ jobs:
 
       - name: Ensure production namespace exists
         run: |
-          kubectl get ns "${{ env.PROD_NS }}" >/dev/null 2>&1 || kubectl create namespace "${{ env.PROD_NS }}"
+          kubectl get ns "${{ env.PROD_NS }}" >/dev/null 2>&1 || \
+          kubectl create namespace "${{ env.PROD_NS }}"
 
       - name: Deploy infra (ConfigMaps, Secrets, Databases, RabbitMQ)
         run: |
@@ -67,12 +67,17 @@ jobs:
           kubectl -n "${{ env.PROD_NS }}" apply -f k8s/order-service.yaml
           kubectl -n "${{ env.PROD_NS }}" apply -f k8s/frontend.yaml
 
-      - name: Point deployments at prod images
+      # Point deployments to :latest images
+      - name: Point deployments at latest images
         run: |
-          kubectl -n "${{ env.PROD_NS }}" set image deploy/product-service '*=${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.TAG }}'
-          kubectl -n "${{ env.PROD_NS }}" set image deploy/customer-service '*=${{ env.ACR_LOGIN_SERVER }}/customer_service:${{ env.TAG }}'
-          kubectl -n "${{ env.PROD_NS }}" set image deploy/order-service '*=${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.TAG }}'
-          kubectl -n "${{ env.PROD_NS }}" set image deploy/frontend '*=${{ env.ACR_LOGIN_SERVER }}/frontend:${{ env.TAG }}'
+          kubectl -n "${{ env.PROD_NS }}" set image deploy/product-service \
+            '*=${{ env.ACR_LOGIN_SERVER }}/product_service:latest'
+          kubectl -n "${{ env.PROD_NS }}" set image deploy/customer-service \
+            '*=${{ env.ACR_LOGIN_SERVER }}/customer_service:latest'
+          kubectl -n "${{ env.PROD_NS }}" set image deploy/order-service \
+            '*=${{ env.ACR_LOGIN_SERVER }}/order_service:latest'
+          kubectl -n "${{ env.PROD_NS }}" set image deploy/frontend \
+            '*=${{ env.ACR_LOGIN_SERVER }}/frontend:latest'
 
       - name: Rollout status
         run: |
