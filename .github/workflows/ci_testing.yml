@@ -73,7 +73,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      # ---- Backend unit tests ----
+      # --- customer_service ---
       - name: Install test deps (customer_service)
         working-directory: backend/customer_service
         run: |
@@ -81,8 +81,17 @@ jobs:
           pip install -r requirements-dev.txt
       - name: Run tests (customer_service)
         working-directory: backend/customer_service
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5434
+          POSTGRES_DB: customers
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          # Belt-and-braces: some apps prefer DATABASE_URL; this overrides defaults.
+          DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5434/customers
         run: pytest -q
 
+      # --- product_service ---
       - name: Install test deps (product_service)
         working-directory: backend/product_service
         run: |
@@ -90,8 +99,16 @@ jobs:
           pip install -r requirements-dev.txt
       - name: Run tests (product_service)
         working-directory: backend/product_service
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5432
+          POSTGRES_DB: products
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/products
         run: pytest -q
 
+      # --- order_service ---
       - name: Install test deps (order_service)
         working-directory: backend/order_service
         run: |
@@ -99,6 +116,13 @@ jobs:
           pip install -r requirements-dev.txt
       - name: Run tests (order_service)
         working-directory: backend/order_service
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5433
+          POSTGRES_DB: orders
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5433/orders
         run: pytest -q
 
       # ---- Push images to ACR only after tests pass ----
